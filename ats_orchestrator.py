@@ -1,22 +1,41 @@
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 import os
 import re
-import requests
-import PyPDF2 as pdf
+try:
+    import requests
+except Exception:
+    requests = None
+try:
+    import PyPDF2 as pdf
+except Exception:
+    pdf = None
 from typing import Dict, Any, List, Tuple, Optional
 
 import numpy as np
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except Exception:
+    BeautifulSoup = None
 
-from langchain_community.chat_models import ChatOllama
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import (
-    ChatPromptTemplate,
-    SystemMessagePromptTemplate,
-    HumanMessagePromptTemplate
-)
+try:
+    from langchain_community.chat_models import ChatOllama
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import (
+        ChatPromptTemplate,
+        SystemMessagePromptTemplate,
+        HumanMessagePromptTemplate
+    )
+except Exception:
+    ChatOllama = None
+    StrOutputParser = None
+    ChatPromptTemplate = None
+    SystemMessagePromptTemplate = None
+    HumanMessagePromptTemplate = None
 
 from config import AVAILABLE_MODELS, SCORING_WEIGHTS, EMBEDDING_MODEL_NAME, SKILL_LEXICON
 
@@ -25,7 +44,10 @@ MAX_RESUME_CHARS = 8000
 MAX_PROFILE_CHARS = 4000
 
 # Create a helper to instantiate a ChatOllama model with common parameters
-def get_llm_instance(model_name: str) -> ChatOllama:
+def get_llm_instance(model_name: str):
+    """Instantiate ChatOllama if available, else return None."""
+    if ChatOllama is None:
+        return None
     return ChatOllama(
         model=model_name,
         temperature=0.5,
@@ -36,16 +58,20 @@ def get_llm_instance(model_name: str) -> ChatOllama:
         num_predict=512
     )
 
-# Instantiate models based on config.
-llm_embedding = get_llm_instance(AVAILABLE_MODELS["embedding"])
-llm_general_light = get_llm_instance(AVAILABLE_MODELS["general"]["light"])
-llm_general_heavy = get_llm_instance(AVAILABLE_MODELS["general"]["heavy"])
+# Instantiate models based on config (tolerant to missing LLM libs).
+llm_embedding = get_llm_instance(AVAILABLE_MODELS.get("embedding"))
+llm_general_light = get_llm_instance(AVAILABLE_MODELS.get("general", {}).get("light"))
+llm_general_heavy = get_llm_instance(AVAILABLE_MODELS.get("general", {}).get("heavy"))
 # For technical tasks, here we choose "data_science" as an example; you may extend this logic.
-llm_technical_light = get_llm_instance(AVAILABLE_MODELS["technical"]["data_science"]["light"])
-llm_technical_heavy = get_llm_instance(AVAILABLE_MODELS["technical"]["data_science"]["heavy"])
-llm_creative_polish = get_llm_instance(AVAILABLE_MODELS["creative_polish"])
+llm_technical_light = get_llm_instance(
+    AVAILABLE_MODELS.get("technical", {}).get("data_science", {}).get("light")
+)
+llm_technical_heavy = get_llm_instance(
+    AVAILABLE_MODELS.get("technical", {}).get("data_science", {}).get("heavy")
+)
+llm_creative_polish = get_llm_instance(AVAILABLE_MODELS.get("creative_polish"))
 
-output_parser = StrOutputParser()
+output_parser = StrOutputParser() if StrOutputParser is not None else None
 
 _NLP = None
 _EMBEDDING_MODEL: Optional[Any] = None

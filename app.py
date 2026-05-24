@@ -3,18 +3,31 @@ load_dotenv()
 
 import streamlit as st
 import os
-import PyPDF2 as pdf
 import re
-import requests
+try:
+    import requests
+except Exception:
+    requests = None
+try:
+    import PyPDF2 as pdf
+except Exception:
+    pdf = None
 from urllib.parse import urlparse
 from typing import Dict, Any
-from langchain_community.chat_models import ChatOllama
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import (
-    ChatPromptTemplate,
-    SystemMessagePromptTemplate,
-    HumanMessagePromptTemplate
-)
+try:
+    from langchain_community.chat_models import ChatOllama
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import (
+        ChatPromptTemplate,
+        SystemMessagePromptTemplate,
+        HumanMessagePromptTemplate
+    )
+except Exception:
+    ChatOllama = None
+    StrOutputParser = None
+    ChatPromptTemplate = None
+    SystemMessagePromptTemplate = None
+    HumanMessagePromptTemplate = None
 
 # Initialize session state
 if 'hallucinations' not in st.session_state:
@@ -23,16 +36,18 @@ if 'matches' not in st.session_state:
     st.session_state.matches = []
 
 # Initialize Ollama
-llm = ChatOllama(
-    model="mistral:7b-instruct",
-    temperature=0.5,
-    top_k=40,
-    top_p=0.85,
-    repeat_penalty=1.15,
-    num_ctx=2048,
-    num_predict=512
-)
-output_parser = StrOutputParser()
+llm = None
+if ChatOllama is not None:
+    llm = ChatOllama(
+        model="mistral:7b-instruct",
+        temperature=0.5,
+        top_k=40,
+        top_p=0.85,
+        repeat_penalty=1.15,
+        num_ctx=2048,
+        num_predict=512
+    )
+output_parser = StrOutputParser() if StrOutputParser is not None else None
 
 # System Prompts
 RESUME_SYSTEM_PROMPT = """You are an expert ATS analyst. Create a resume that exactly matches the job description using ONLY provided information.
@@ -97,6 +112,8 @@ def track_hallucinations(response: str) -> str:
 def generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt: str) -> str:
     """Generate content with proper error handling"""
     try:
+        if ChatPromptTemplate is None or SystemMessagePromptTemplate is None or HumanMessagePromptTemplate is None or llm is None or output_parser is None:
+            return "Generation unavailable: optional LLM dependencies are not installed."
         prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_prompt),
             HumanMessagePromptTemplate.from_template(prompt_template)
@@ -112,6 +129,8 @@ def generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt
 def input_pdf_text(uploaded_file) -> str:
     """Extract text from PDF"""
     try:
+        if pdf is None:
+            return "PDF error: PyPDF2 is not installed"
         reader = pdf.PdfReader(uploaded_file)
         return "\n".join([page.extract_text() for page in reader.pages])
     except Exception as e:
