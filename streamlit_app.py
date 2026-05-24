@@ -15,6 +15,7 @@ from ats_orchestrator import (
     generate_cover_letter,
     analyze_match
 )
+from ats_orchestrator import stream_generate_resume, stream_generate_cover_letter
 
 # Initialize session state for tracking hallucinations and match history.
 if 'hallucinations' not in st.session_state:
@@ -26,6 +27,7 @@ st.title("Precision ATS Aligner")
 st.caption("Primary UI. app.py is legacy.")
 
 low_memory_mode = st.toggle("Low Memory Mode", value=True, help="Use lighter models to avoid RAM errors.")
+stream_responses = st.checkbox("Stream Responses", value=True, help="Stream model output as it is generated when supported.")
 
 # --- Job Description Input ---
 jd_method = st.radio("Job Description Input Method:", ("Text", "URL"), horizontal=True)
@@ -71,11 +73,19 @@ if col1.button("Generate Precision Resume"):
     elif not resume_text:
         st.error("Please upload your resume.")
     else:
-        with st.spinner("Generating resume..."):
-            keywords_for_prompt = list(dict.fromkeys(jd_keywords + jd_phrases))
-            result = generate_resume(jd_text, resume_text, profile_text, keywords_for_prompt, low_memory=low_memory_mode)
+        keywords_for_prompt = list(dict.fromkeys(jd_keywords + jd_phrases))
         st.subheader("Generated Resume")
-        st.text_area("Result", value=result, height=500)
+        placeholder = st.empty()
+        if stream_responses:
+            # Stream chunks into the placeholder
+            content = ""
+            for chunk in stream_generate_resume(jd_text, resume_text, profile_text, keywords_for_prompt, low_memory=low_memory_mode):
+                content += chunk
+                placeholder.text_area("Result", value=content, height=500)
+        else:
+            with st.spinner("Generating resume..."):
+                result = generate_resume(jd_text, resume_text, profile_text, keywords_for_prompt, low_memory=low_memory_mode)
+            placeholder.text_area("Result", value=result, height=500)
 
 if col2.button("Generate Cover Letter"):
     if not jd_text:
@@ -83,12 +93,21 @@ if col2.button("Generate Cover Letter"):
     elif not resume_text:
         st.error("Please upload your resume.")
     else:
-        with st.spinner("Generating cover letter..."):
-            result = generate_cover_letter(jd_text, resume_text, low_memory=low_memory_mode)
         st.subheader("Generated Cover Letter")
-        st.text_area("Result", value=result, height=400)
-        match_count = result.count("[RESUME EVIDENCE]")
-        st.success(f"Verified Evidence Links: {match_count}")
+        placeholder = st.empty()
+        if stream_responses:
+            content = ""
+            for chunk in stream_generate_cover_letter(jd_text, resume_text, low_memory=low_memory_mode):
+                content += chunk
+                placeholder.text_area("Result", value=content, height=400)
+            match_count = content.count("[RESUME EVIDENCE]")
+            st.success(f"Verified Evidence Links: {match_count}")
+        else:
+            with st.spinner("Generating cover letter..."):
+                result = generate_cover_letter(jd_text, resume_text, low_memory=low_memory_mode)
+            st.text_area("Result", value=result, height=400)
+            match_count = result.count("[RESUME EVIDENCE]")
+            st.success(f"Verified Evidence Links: {match_count}")
 
 if col3.button("Analyze Resume-JD Match"):
     if not jd_text:

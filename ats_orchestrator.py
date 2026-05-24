@@ -191,6 +191,33 @@ def get_llm_instance(model_name: str):
                     except Exception as e:
                         return f"Ollama CLI error: {str(e)}"
 
+                def run_prompt_stream(self, prompt_text: str, timeout: int = 60):
+                    """Stream output from the ollama CLI as it arrives.
+
+                    Yields decoded UTF-8 text chunks.
+                    """
+                    try:
+                        proc = subprocess.Popen(
+                            ["ollama", "run", self.model, prompt_text],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            bufsize=1
+                        )
+                        # Read raw bytes and decode incrementally
+                        assert proc.stdout is not None
+                        while True:
+                            chunk = proc.stdout.read(1024)
+                            if not chunk:
+                                break
+                            try:
+                                text = chunk.decode("utf-8")
+                            except Exception:
+                                text = chunk.decode("utf-8", errors="replace")
+                            yield text
+                        proc.wait(timeout=timeout)
+                    except Exception as e:
+                        yield f"Ollama CLI stream error: {str(e)}"
+
             return OllamaCLIModel(model_name)
     except Exception:
         pass
@@ -386,6 +413,86 @@ def generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt
         return track_hallucinations(response)
     except Exception as e:
         return f"Generation error: {str(e)}"
+
+
+def stream_generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt: str, model_instance: Any):
+    """Yield generation chunks as they become available.
+
+    - If model_instance exposes run_prompt_stream, yield chunks from it.
+    - Otherwise fall back to a single final string via generate_content.
+    """
+    try:
+        # Render prompt
+        try:
+            formatted = prompt_template.format(**inputs)
+        except Exception:
+            formatted = "\n".join([f"{k}: {v}" for k, v in inputs.items()])
+        full_prompt = system_prompt + "\n\n" + formatted
+
+        if hasattr(model_instance, "run_prompt_stream"):
+            for chunk in model_instance.run_prompt_stream(full_prompt):
+                yield chunk
+            return
+
+        # Fallback: single-shot generation
+        out = generate_content(prompt_template, inputs, system_prompt, model_instance)
+        yield out
+    except Exception as e:
+        yield f"Generation stream error: {str(e)}"
+
+
+def stream_generate_resume(jd: str, resume: str, profile: str, keywords: list, low_memory: bool = False):
+    """Stream resume generation. Yields intermediate chunks and final sanitized output."""
+    prompt = """
+    Create resume optimized for this job:
+    Job Description: {jd}
+    Current Resume: {resume}
+    Additional Profile: {profile}
+    Keywords to emphasize: {keywords}
+    """
+    inputs = {
+        "jd": clamp_text(jd, MAX_JD_CHARS),
+        "resume": clamp_text(resume, MAX_RESUME_CHARS),
+        "profile": clamp_text(profile, MAX_PROFILE_CHARS),
+        "keywords": ", ".join(keywords),
+    }
+    # select model
+    model = llm_technical_heavy if not low_memory else llm_technical_light
+    # Stream generation
+    buffer = ""
+    for chunk in stream_generate_content(prompt, inputs, RESUME_SYSTEM_PROMPT, model):
+        buffer += chunk
+        yield chunk
+
+    # After stream ends, sanitize and yield final replacement marker
+    try:
+        sanitized = sanitize_output_against_resume(buffer, resume)
+        # If sanitized differs, yield the sanitized version as the final chunk
+        if sanitized != buffer:
+            yield "\n" + sanitized
+    except Exception:
+        return
+
+
+def stream_generate_cover_letter(jd: str, resume: str, low_memory: bool = False):
+    prompt = """
+    Write cover letter for:
+    Job Description: {jd}
+    Resume: {resume}
+    """
+    inputs = {"jd": clamp_text(jd, MAX_JD_CHARS), "resume": clamp_text(resume, MAX_RESUME_CHARS)}
+    model = llm_general_heavy if not low_memory else llm_general_light
+    buffer = ""
+    for chunk in stream_generate_content(prompt, inputs, COVER_LETTER_SYSTEM_PROMPT, model):
+        buffer += chunk
+        yield chunk
+
+    try:
+        sanitized = sanitize_output_against_resume(buffer, resume)
+        if sanitized != buffer:
+            yield "\n" + sanitized
+    except Exception:
+        return
 
 
 def generate_content_fallback(prompt_template: str, inputs: Dict[str, Any], system_prompt: str) -> str:
