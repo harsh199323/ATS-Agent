@@ -142,6 +142,14 @@ def track_hallucinations(response: str) -> str:
 def generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt: str, model_instance: ChatOllama) -> str:
     """Generate content using the provided model instance and LangChain prompt chaining."""
     try:
+        if (
+            ChatPromptTemplate is None
+            or SystemMessagePromptTemplate is None
+            or HumanMessagePromptTemplate is None
+            or output_parser is None
+            or model_instance is None
+        ):
+            return "Generation unavailable: optional LangChain/LLM dependencies are not installed."
         prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_prompt),
             HumanMessagePromptTemplate.from_template(prompt_template)
