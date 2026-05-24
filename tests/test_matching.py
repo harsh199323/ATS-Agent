@@ -1,0 +1,17 @@
+from ats_orchestrator import extract_keywords, compute_match_scores
+
+
+def test_extract_keywords_filters_stopwords():
+    text = "Python and data engineering with ML and AI for production."
+    result = extract_keywords(text, n=10)
+    assert "and" not in result["keywords"]
+    assert "python" in result["keywords"]
+
+
+def test_compute_match_scores_returns_expected_fields():
+    jd = "We need Python, Docker, and FastAPI experience with 3+ years."
+    resume = "Built Python services with FastAPI. 4 years experience."
+    scores = compute_match_scores(jd, resume)
+    assert "overall_score" in scores
+    assert "missing_skills" in scores
+    assert isinstance(scores["top_matches"], list)

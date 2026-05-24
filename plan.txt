@@ -1,0 +1,8 @@
+I want a text field where user can enter jd: either link or copied JobDescription
+below that table having ['upload resume
+upload profile if available(optional)']
+
+then at fotter to have buttons to customise and create new resume based on job description, cover letter
+prompts template(multiple)
+
+

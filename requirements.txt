@@ -1,0 +1,52 @@
+# Streamlit for building the web application
+streamlit==1.32.0
+
+# PyPDF2 for reading and extracting text from PDF files
+PyPDF2==3.0.1
+
+# python-dotenv for loading environment variables from a .env file
+python-dotenv==1.0.0
+
+# Langchain libraries for working with language models
+langchain-core==0.2.20
+langchain-community
+langchain-ollama==0.1.0
+
+# Requests for making HTTP requests to external APIs
+requests==2.31.0
+
+# urllib3 for handling URL requests
+urllib3==2.0.7
+
+# tqdm for progress bars
+tqdm==4.66.1
+
+# python-magic for file type detection
+python-magic==0.4.27
+
+# BeautifulSoup for parsing HTML and XML documents
+beautifulsoup4==4.12.3
+
+# NLTK for natural language processing tasks
+nltk==3.8.1
+
+# spaCy for lemmatization and phrase extraction
+spacy==3.7.2
+
+# sentence-transformers for semantic embeddings
+sentence-transformers==2.7.0
+
+# scikit-learn for TF-IDF and similarity scoring
+scikit-learn==1.4.2
+
+# Pydantic for data validation and settings management
+pydantic==2.7.4
+
+# typing-extensions for type hinting support
+typing-extensions>=4.0.0
+
+#Cross-platform lib for process and system monitoring in Python
+psutil
+
+# pytest for basic unit tests
+pytest==8.2.0
