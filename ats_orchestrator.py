@@ -65,6 +65,63 @@ def get_llm_instance(model_name: str):
     Tries providers in order: ChatOllama, ChatLlamaCpp. Returns None when
     no supported provider is installed.
     """
+    # Prefer Deepseek HTTP API when an API key is present.
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    deepseek_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions")
+    if deepseek_key:
+        try:
+            if requests is not None:
+                class DeepseekHTTPModel:
+                    def __init__(self, model: str):
+                        self.model = model
+                        self.is_deepseek = True
+
+                    def run_prompt(self, prompt_text: str, timeout: int = 60) -> str:
+                        try:
+                            headers = {
+                                "Authorization": f"Bearer {deepseek_key}",
+                                "Content-Type": "application/json",
+                            }
+                            payload = {
+                                "model": self.model,
+                                "messages": [{"role": "user", "content": prompt_text}],
+                                "max_tokens": 512,
+                                "temperature": 0.5,
+                            }
+                            resp = requests.post(deepseek_url, json=payload, headers=headers, timeout=timeout)
+                            resp.raise_for_status()
+                            body = resp.json()
+                            # Support common response shapes used by chat-completion APIs
+                            if isinstance(body, dict):
+                                # OpenAI-like
+                                if "choices" in body and body["choices"]:
+                                    first = body["choices"][0]
+                                    # Chat-style
+                                    if isinstance(first.get("message"), dict):
+                                        return first["message"].get("content", "").strip()
+                                    # Text-style
+                                    if "text" in first:
+                                        return first.get("text", "").strip()
+                                # direct text field
+                                if "text" in body:
+                                    return body.get("text", "").strip()
+                            # Fallback to raw text
+                            return str(body)
+                        except Exception as e:
+                            return f"Deepseek API error: {str(e)}"
+
+                # Quick health-check: ensure the API key is usable before returning
+                try:
+                    test_client = DeepseekHTTPModel(model_name)
+                    health = test_client.run_prompt("Say hello", timeout=6)
+                    low = (health or "").lower()
+                    if low and not low.startswith("deepseek api error") and "payment required" not in low and "error:" not in low:
+                        return test_client
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # Try Ollama provider first
     if ChatOllama is not None:
         try:
@@ -298,7 +355,9 @@ def generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt
         if model_instance is None:
             return generate_content_fallback(prompt_template, inputs, system_prompt)
 
-        if hasattr(model_instance, "is_ollama_cli") and model_instance.is_ollama_cli:
+        # If the model instance exposes a run_prompt method (Deepseek HTTP wrapper
+        # or Ollama CLI wrapper), use it directly.
+        if hasattr(model_instance, "run_prompt"):
             # Render the user-facing prompt by formatting template with inputs
             try:
                 formatted = prompt_template.format(**inputs)
@@ -416,7 +475,14 @@ def generate_with_fallback(
 ) -> str:
     """Retry with a lighter model when the primary model exceeds memory."""
     result = generate_content(prompt_template, inputs, system_prompt, primary_model)
-    if "requires more system memory" in result:
+    lower = result.lower() if isinstance(result, str) else ""
+    # If the model indicates memory issues or returns an error, try the fallback.
+    if (
+        "requires more system memory" in lower
+        or lower.startswith("generation error")
+        or "deepseek api error" in lower
+        or "error:" in lower
+    ):
         return generate_content(prompt_template, inputs, system_prompt, fallback_model)
     return result
 
