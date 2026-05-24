@@ -10,6 +10,8 @@ try:
     import requests
 except Exception:
     requests = None
+import shutil
+import subprocess
 try:
     import PyPDF2 as pdf
 except Exception:
@@ -23,7 +25,21 @@ except Exception:
     BeautifulSoup = None
 
 try:
+    # Prefer community chat models; different installs expose providers differently.
     from langchain_community.chat_models import ChatOllama
+except Exception:
+    ChatOllama = None
+
+try:
+    # Local Llama/C++ provider
+    from langchain_community.chat_models.llamacpp import ChatLlamaCpp
+except Exception:
+    try:
+        from langchain_community.chat_models import ChatLlamaCpp
+    except Exception:
+        ChatLlamaCpp = None
+
+try:
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import (
         ChatPromptTemplate,
@@ -31,7 +47,6 @@ try:
         HumanMessagePromptTemplate
     )
 except Exception:
-    ChatOllama = None
     StrOutputParser = None
     ChatPromptTemplate = None
     SystemMessagePromptTemplate = None
@@ -45,18 +60,85 @@ MAX_PROFILE_CHARS = 4000
 
 # Create a helper to instantiate a ChatOllama model with common parameters
 def get_llm_instance(model_name: str):
-    """Instantiate ChatOllama if available, else return None."""
-    if ChatOllama is None:
-        return None
-    return ChatOllama(
-        model=model_name,
-        temperature=0.5,
-        top_k=40,
-        top_p=0.85,
-        repeat_penalty=1.15,
-        num_ctx=2048,
-        num_predict=512
-    )
+    """Instantiate a local chat model (Ollama or LlamaCPP) if available.
+
+    Tries providers in order: ChatOllama, ChatLlamaCpp. Returns None when
+    no supported provider is installed.
+    """
+    # Try Ollama provider first
+    if ChatOllama is not None:
+        try:
+            return ChatOllama(
+                model=model_name,
+                temperature=0.5,
+                top_k=40,
+                top_p=0.85,
+                repeat_penalty=1.15,
+                num_ctx=2048,
+                num_predict=512
+            )
+        except Exception:
+            pass
+
+    # Try LlamaCPP local provider
+    if ChatLlamaCpp is not None:
+        try:
+            # ChatLlamaCpp wrappers may accept different argument names; try common ones.
+            try:
+                return ChatLlamaCpp(model=model_name, n_ctx=2048, n_predict=512, temperature=0.5)
+            except TypeError:
+                return ChatLlamaCpp(model=model_name, num_ctx=2048, num_predict=512, temperature=0.5)
+        except Exception:
+            pass
+
+    # If neither LangChain provider is installed, fall back to the Ollama CLI if present.
+    try:
+        if model_name and shutil.which("ollama"):
+            # Lightweight wrapper that calls the local ollama CLI. This avoids a hard
+            # dependency on the langchain ChatOllama class while still enabling local
+            # model usage when ollama is installed and running.
+            class OllamaCLIModel:
+                def __init__(self, model: str):
+                    self.model = model
+                    # marker used by generate_content to select CLI path
+                    self.is_ollama_cli = True
+
+                def run_prompt(self, prompt_text: str, timeout: int = 60) -> str:
+                    try:
+                        # Use ollama run <model> "prompt text" to generate text.
+                        # Pass the prompt as a positional argument to avoid flag
+                        # incompatibilities across ollama versions.
+                        # Capture raw bytes and decode explicitly to avoid
+                        # platform-dependent decoding errors (cp1252 on Windows).
+                        proc = subprocess.run(
+                            ["ollama", "run", self.model, prompt_text],
+                            capture_output=True,
+                            text=False,
+                            timeout=timeout
+                        )
+                        out_bytes = proc.stdout or b""
+                        err_bytes = proc.stderr or b""
+                        try:
+                            out = out_bytes.decode("utf-8")
+                        except Exception:
+                            out = out_bytes.decode("utf-8", errors="replace")
+                        out = out.strip()
+                        if out:
+                            return out
+                        # If stdout is empty, decode and return stderr to aid debugging.
+                        try:
+                            err = err_bytes.decode("utf-8")
+                        except Exception:
+                            err = err_bytes.decode("utf-8", errors="replace")
+                        return err.strip() or ""
+                    except Exception as e:
+                        return f"Ollama CLI error: {str(e)}"
+
+            return OllamaCLIModel(model_name)
+    except Exception:
+        pass
+
+    return None
 
 # Instantiate models based on config (tolerant to missing LLM libs).
 llm_embedding = get_llm_instance(AVAILABLE_MODELS.get("embedding"))
@@ -139,17 +221,103 @@ def track_hallucinations(response: str) -> str:
     # (In a Streamlit app, you can log these to session state.)
     return response
 
+
+def find_name_in_resume(resume: str) -> Optional[str]:
+    """Try to heuristically find the candidate's name in the resume text.
+
+    Looks for a short line with 1-3 capitalized words and returns it.
+    """
+    for line in resume.splitlines():
+        ln = line.strip()
+        if not ln or len(ln) > 60:
+            continue
+        # Match typical name-like lines e.g. "Jane Doe" or "John A. Smith"
+        if re.match(r"^[A-Z][a-z]+(?:[ \-][A-Z][a-z\.]+){0,2}$", ln):
+            return ln
+    return None
+
+
+def extract_resume_contacts(resume: str) -> Dict[str, set]:
+    """Extract emails and phone-like tokens from the resume for verification."""
+    emails = set(re.findall(r"[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}", resume))
+    phones = set(re.findall(r"\+?\d[\d\-\s\(\)]{6,}\d", resume))
+    # Lowercase copies for simple containment checks
+    return {"emails": emails, "phones": phones}
+
+
+def sanitize_output_against_resume(output: str, resume: str) -> str:
+    """Remove or blank out invented contact info and replace placeholder names.
+
+    - Removes lines containing Address/Phone/Email if those specific values are not
+      present in the provided resume text.
+    - Replaces common placeholders like 'John Doe' or 'Candidate' with the name
+      found in the resume when possible.
+    """
+    contacts = extract_resume_contacts(resume)
+    found_name = find_name_in_resume(resume)
+
+    sanitized_lines: List[str] = []
+    for line in output.splitlines():
+        low = line.lower().strip()
+        # Remove contact lines if the contained value does not appear in resume
+        if low.startswith("address:") or low.startswith("phone:") or low.startswith("email:"):
+            # extract the value portion
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                val = parts[1].strip()
+                # if an email present and not in resume, skip the line
+                if re.search(r"[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}", val):
+                    if val not in contacts["emails"]:
+                        continue
+                # phone-like
+                if re.search(r"\+?\d[\d\-\s\(\)]{6,}\d", val):
+                    if val not in contacts["phones"]:
+                        continue
+            # otherwise keep the line if no clear mismatch
+            sanitized_lines.append(line)
+            continue
+
+        # Replace common placeholder names with the real name when available
+        if found_name:
+            # replace exact matches of John Doe / Candidate etc.
+            if re.search(r"\bJohn Doe\b", line):
+                line = re.sub(r"\bJohn Doe\b", found_name, line)
+            if re.search(r"\bCandidate\b", line, flags=re.IGNORECASE):
+                line = re.sub(r"\bCandidate\b", found_name, line, flags=re.IGNORECASE)
+
+        sanitized_lines.append(line)
+
+    return "\n".join(sanitized_lines)
+
 def generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt: str, model_instance: ChatOllama) -> str:
     """Generate content using the provided model instance and LangChain prompt chaining."""
     try:
+        # If the model instance is the Ollama CLI wrapper, format the prompt
+        # and call the CLI directly. This keeps a lightweight dependency surface
+        # and works even when langchain ChatOllama is not installed.
+        if model_instance is None:
+            return generate_content_fallback(prompt_template, inputs, system_prompt)
+
+        if hasattr(model_instance, "is_ollama_cli") and model_instance.is_ollama_cli:
+            # Render the user-facing prompt by formatting template with inputs
+            try:
+                formatted = prompt_template.format(**inputs)
+            except Exception:
+                # If formatting fails, fall back to a safe join of inputs
+                formatted = "\n".join([f"{k}: {v}" for k, v in inputs.items()])
+            full_prompt = system_prompt + "\n\n" + formatted
+            out = model_instance.run_prompt(full_prompt)
+            return track_hallucinations(out)
+
+        # Otherwise try to use LangChain prompt chaining if available.
         if (
             ChatPromptTemplate is None
             or SystemMessagePromptTemplate is None
             or HumanMessagePromptTemplate is None
             or output_parser is None
-            or model_instance is None
         ):
-            return "Generation unavailable: optional LangChain/LLM dependencies are not installed."
+            return generate_content_fallback(prompt_template, inputs, system_prompt)
+
         prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_prompt),
             HumanMessagePromptTemplate.from_template(prompt_template)
@@ -159,6 +327,85 @@ def generate_content(prompt_template: str, inputs: Dict[str, Any], system_prompt
         return track_hallucinations(response)
     except Exception as e:
         return f"Generation error: {str(e)}"
+
+
+def generate_content_fallback(prompt_template: str, inputs: Dict[str, Any], system_prompt: str) -> str:
+    """Deterministic fallback generator when LLMs are unavailable.
+
+    This produces a concise, template-driven resume / cover letter / analysis
+    using extracted keywords and simple heuristics so the UI remains useful
+    without heavy LLM dependencies.
+    """
+    try:
+        jd = inputs.get("jd", "") or inputs.get("job_description", "")
+        resume = inputs.get("resume", "")
+        profile = inputs.get("profile", "")
+        keywords = inputs.get("keywords") or inputs.get("keywords", "")
+        if isinstance(keywords, str):
+            keywords_list = [k.strip() for k in keywords.split(",") if k.strip()]
+        else:
+            keywords_list = list(keywords) if keywords is not None else []
+
+        # Resume fallback: create a tailored summary + prioritized skills + evidence bullets
+        if system_prompt == RESUME_SYSTEM_PROMPT or "resume" in system_prompt.lower():
+            top_kw = keywords_list[:8]
+            summary_parts = []
+            if profile:
+                summary_parts.append(profile.strip())
+            if top_kw:
+                summary_parts.append("Key skills: " + ", ".join(top_kw))
+            summary = " - ".join(summary_parts) if summary_parts else "Tailored candidate summary."
+
+            # Pull up to 6 short experience lines from the resume
+            bullets = []
+            for line in resume.splitlines():
+                ln = line.strip()
+                if not ln:
+                    continue
+                if len(bullets) >= 6:
+                    break
+                # keep reasonably short lines
+                bullets.append(ln if len(ln) <= 200 else ln[:197] + "...")
+
+            skills_section = ("Skills: " + ", ".join(top_kw)) if top_kw else "Skills: [none extracted]"
+            generated = f"[Contact Info]\n{summary}\n\n{skills_section}\n\n[Experience]\n"
+            for b in bullets:
+                generated += f"- {b}\n"
+            generated += "\n[Notes] This is a deterministic fallback summary. For richer results, install an LLM provider."
+            return generated
+
+        # Cover letter fallback
+        if system_prompt == COVER_LETTER_SYSTEM_PROMPT or "cover" in system_prompt.lower():
+            opening = "Dear Hiring Team,\n\nI am writing to express interest in the role described."
+            focus = "I bring experience in " + (", ".join(keywords_list[:3]) if keywords_list else "relevant areas") + "."
+            evidence = "From my resume: "
+            # use first two resume lines as evidence
+            evidence_lines = [ln for ln in (resume.splitlines()[:2]) if ln.strip()]
+            if evidence_lines:
+                evidence += "; ".join(evidence_lines)
+            closing = "\n\nSincerely,\nCandidate"
+            return opening + "\n\n" + focus + "\n\n" + evidence + closing
+
+        # Analysis fallback
+        if system_prompt == ANALYSIS_SYSTEM_PROMPT or "analy" in system_prompt.lower():
+            # compute simple keyword overlap
+            jd_tokens = set([w.lower() for w in re.findall(r"\w{3,}", jd)])
+            resume_tokens = set([w.lower() for w in re.findall(r"\w{3,}", resume)])
+            overlap = jd_tokens & resume_tokens
+            pct = int((len(overlap) / max(1, len(jd_tokens))) * 100)
+            missing = sorted(list(jd_tokens - resume_tokens))[:20]
+            strengths = sorted(list(overlap))[:10]
+            return (
+                f"Match Percentage: {pct}%\n"
+                f"Missing Keywords: {', '.join(missing) if missing else 'None'}\n"
+                f"Strengths: {', '.join(strengths) if strengths else 'None'}\n"
+                f"Improvements: Add more JD keywords to experience and skills sections."
+            )
+
+        # Fallback default
+        return "Generation unavailable: no LLM found and no deterministic fallback matched."
+    except Exception as e:
+        return f"Generation fallback error: {str(e)}"
 
 def generate_with_fallback(
     prompt_template: str,
@@ -484,10 +731,18 @@ def generate_resume(jd: str, resume: str, profile: str, keywords: list, low_memo
         "keywords": ", ".join(keywords),
         "missing_skills": ", ".join(missing_skills) if missing_skills else "None"
     }
+    # Instruct models explicitly not to invent contact PII; enforce via sanitizer.
+    prompt = prompt + "\n\nDo not invent contact information. Only include contact fields that appear in the provided resume. If none are present, omit contact lines. Keep the resume concise."
     if low_memory:
-        return generate_content(prompt, inputs, RESUME_SYSTEM_PROMPT, llm_technical_light)
-    # Try heavy model first, then fall back to light if memory is insufficient.
-    return generate_with_fallback(prompt, inputs, RESUME_SYSTEM_PROMPT, llm_technical_heavy, llm_technical_light)
+        result = generate_content(prompt, inputs, RESUME_SYSTEM_PROMPT, llm_technical_light)
+    else:
+        # Try heavy model first, then fall back to light if memory is insufficient.
+        result = generate_with_fallback(prompt, inputs, RESUME_SYSTEM_PROMPT, llm_technical_heavy, llm_technical_light)
+
+    try:
+        return sanitize_output_against_resume(result, inputs.get("resume", ""))
+    except Exception:
+        return result
 
 def generate_cover_letter(jd: str, resume: str, low_memory: bool = False) -> str:
     """Generate a cover letter based on the job description and resume."""
@@ -506,10 +761,17 @@ def generate_cover_letter(jd: str, resume: str, low_memory: bool = False) -> str
         "jd": clamp_text(jd, MAX_JD_CHARS),
         "resume": clamp_text(resume, MAX_RESUME_CHARS)
     }
+    prompt = prompt + "\n\nDo not invent contact information or personal details. Use only information present in the provided resume. If necessary, state clearly when details are missing."
     if low_memory:
-        return generate_content(prompt, inputs, COVER_LETTER_SYSTEM_PROMPT, llm_general_light)
-    # Try heavy model first, then fall back to light if memory is insufficient.
-    return generate_with_fallback(prompt, inputs, COVER_LETTER_SYSTEM_PROMPT, llm_general_heavy, llm_general_light)
+        result = generate_content(prompt, inputs, COVER_LETTER_SYSTEM_PROMPT, llm_general_light)
+    else:
+        # Try heavy model first, then fall back to light if memory is insufficient.
+        result = generate_with_fallback(prompt, inputs, COVER_LETTER_SYSTEM_PROMPT, llm_general_heavy, llm_general_light)
+
+    try:
+        return sanitize_output_against_resume(result, inputs.get("resume", ""))
+    except Exception:
+        return result
 
 def analyze_match(jd: str, resume: str, low_memory: bool = False) -> str:
     """Analyze the match between a resume and a job description."""

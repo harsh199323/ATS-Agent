@@ -2,9 +2,12 @@
 # Configuration file for ATSModelOrchestrator models
 
 AVAILABLE_MODELS = {
-    "embedding": "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:latest",
+    # Prefer the local deepseek-coder Ollama model when available. This
+    # gives better local quality on machines where the model is installed
+    # into the ollama daemon. Other entries fall back to the Bartowski Llama.
+    "embedding": "deepseek-coder:6.7b",
     "general": {
-        "light": "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:latest",
+        "light": "deepseek-coder:6.7b",
         "heavy": "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:latest"
     },
     "technical": {
@@ -29,7 +32,7 @@ AVAILABLE_MODELS = {
             "heavy": "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:latest"
         }
     },
-    "creative_polish": "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:latest"
+    "creative_polish": "deepseek-coder:6.7b"
 }
 
 # Hybrid scoring weights (must sum to 1.0)

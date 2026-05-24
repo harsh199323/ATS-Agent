@@ -1,5 +1,5 @@
 # Streamlit for building the web application
-streamlit==1.32.0
+streamlit==1.57.0
 
 # PyPDF2 for reading and extracting text from PDF files
 PyPDF2==3.0.1
@@ -8,12 +8,11 @@ PyPDF2==3.0.1
 python-dotenv==1.0.0
 
 # Langchain libraries for working with language models
-langchain-core==0.2.20
-langchain-community
-langchain-ollama==0.1.0
+langchain-core==1.4.0
+langchain-community==0.4.2
 
 # Requests for making HTTP requests to external APIs
-requests==2.31.0
+requests==2.34.2
 
 # urllib3 for handling URL requests
 urllib3==2.0.7
@@ -31,16 +30,16 @@ beautifulsoup4==4.12.3
 nltk==3.8.1
 
 # spaCy for lemmatization and phrase extraction
-spacy==3.7.2
+spacy==3.8.14
 
 # sentence-transformers for semantic embeddings
 sentence-transformers==2.7.0
 
 # scikit-learn for TF-IDF and similarity scoring
-scikit-learn==1.4.2
+scikit-learn==1.6.1
 
 # Pydantic for data validation and settings management
-pydantic==2.7.4
+pydantic==2.13.4
 
 # typing-extensions for type hinting support
 typing-extensions>=4.0.0
